@@ -2,7 +2,7 @@
 
 ![Competition](https://img.shields.io/badge/Conv__Cup-'26-blue?style=for-the-badge)
 ![Environment](https://img.shields.io/badge/Arena-2D%20Football%201v1-green?style=for-the-badge)
-![Language](https://img.shields.io/badge/Python-NumPy%20Only-yellow?style=for-the-badge&logo=python&logoColor=white)
+![Language](https://img.shields.io/badge/Python%20Only-yellow?style=for-the-badge&logo=python&logoColor=white)
 ![Design](https://img.shields.io/badge/Architecture-Hierarchical%20%2B%20Risk--Aware-orange?style=for-the-badge)
 
 > **Autonomous 2D Football Agent Architecture for Conv_Cup '26 (FIFA of AI / ML RL Challenge)**
@@ -49,7 +49,7 @@ FIFA-AEGIS is designed around the official **Conv_Cup '26 / MLFootball environme
 | **Match Format** | 1v1 autonomous duel with alternating `left` / `right` sides | Asymmetric coordinate normalization relative to the home goal |
 | **I/O Contract** | Strict JSON actions through `stdout`; diagnostics through `stderr` | Lightweight serialized action projector |
 | **Latency Budget** | Strictly `< 2.0 seconds` per decision turn | Sub-millisecond heuristic fallback for ordinary states |
-| **Execution Safety** | Zero networking, zero subprocesses, zero unapproved dependencies | Pure Python / NumPy mathematical core |
+| **Execution Safety** | Zero networking, zero subprocesses, zero unapproved dependencies | Pure Python mathematical core |
 | **Tournament Engine** | Double-elimination bracket with aggregate goal tie-breakers | Dynamic risk scaling based on series aggregate scoreline |
 
 > [!WARNING]
