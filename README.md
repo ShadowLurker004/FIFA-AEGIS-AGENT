@@ -1,1002 +1,375 @@
-# ⚽ FIFA-AEGIS: Adaptive Expected-Goal Intelligence System
+# FIFA-AEGIS: Adaptive Expected-Goal Intelligence System
 
 ![Competition](https://img.shields.io/badge/Conv__Cup-'26-blue?style=for-the-badge)
 ![Environment](https://img.shields.io/badge/Arena-2D%20Football%201v1-green?style=for-the-badge)
-![Language](https://img.shields.io/badge/Python%20Only-yellow?style=for-the-badge&logo=python&logoColor=white)
-![Design](https://img.shields.io/badge/Architecture-Hierarchical%20%2B%20Risk--Aware-orange?style=for-the-badge)
+![Language](https://img.shields.io/badge/Python-Standard%20Library%20Only-yellow?style=for-the-badge&logo=python&logoColor=white)
+![Status](https://img.shields.io/badge/Status-In%20Development-orange?style=for-the-badge)
 
-> **Autonomous 2D Football Agent Architecture for Conv_Cup '26 (FIFA of AI / ML RL Challenge)**
+> **A tuned, rule-based 1v1 football agent for the Conv_Cup '26 AI Soccer Arena (MLFootball environment).**
 
-A research-grounded, modular control architecture that decouples **spatial estimation, tactical risk gating, and real-time execution** for deterministic 2D soccer arenas.
+FIFA-AEGIS is a deterministic tactical controller built for the official Conv_Cup '26 simulator. It separates **ball prediction, tactical decision-making, and safe action execution**, and it tunes the controller's parameters by running thousands of simulated matches on both sides of the pitch.
 
 ![FIFA-AEGIS Architecture](assets./Architecture.png)
 
+> [!NOTE]
+> This README describes the design, the workflow, and the real environment rules. The only performance numbers included are measurements of the **unmodified organizer starter bot** (Section 8). No result is claimed for FIFA-AEGIS until it has been measured the same way.
+
 ---
 
-##  1. Executive Summary & Design Thesis
+## 1. Overview and Design Thesis
 
-Modern reinforcement learning agents in simulated sports often suffer from **policy collapse, catastrophic forgetting, and severe sensitivity to seed initialization** when trained as single end-to-end monolithic networks.
+The competition runs two independent bots on a small continuous pitch. Each bot gets one JSON observation per iteration and must answer within **2 seconds** using **only the Python standard library**.
 
-**FIFA-AEGIS** resolves this fragility through a hierarchical, risk-aware architecture specifically adapted to the **1v1 continuous-space dynamics** of the Conv_Cup '26 environment.
+Under those limits, FIFA-AEGIS follows four principles:
 
-Instead of forcing a single policy to handle both long-term tournament strategy and low-level trajectory physics, FIFA-AEGIS decouples tactical intent from low-level execution.
-
-> [!IMPORTANT]
-> **Goal differential is the one metric that matters.** Maximizing net goal differential takes strict precedence over possession-oriented vanity metrics.
-
-### Core Design Principles
-
-- **Goal-Centric Optimization:** Maximizing net goal differential takes strict mathematical precedence over possession-oriented vanity metrics.
-- **Hierarchical State Control:** High-level tactical state machines govern agent aggression, while low-level kinematic controllers execute pathing and obstacle repulsion.
-- **Event-Triggered Search:** High-overhead search and tactical overrides fire exclusively during high-leverage inflection events such as loose balls, open-net trajectories, and defensive emergencies.
-- **Deterministic Robustness:** The architecture is designed to generalize across unseen random seeds, randomized obstacle layouts, and alternating-side tournament fixtures.
-
-The core objective:
+- **Goals decide matches.** The objective is net goal differential, not possession or distance covered.
+- **Hand-written tactics first.** Interception, shooting, defending and obstacle avoidance are explicit geometry, so behavior is predictable and easy to debug.
+- **Parameters are tuned, not guessed.** Constants such as kick power, shooting range and pressing offset are chosen by automated search over many seeds.
+- **A valid action every turn.** Every decision passes a safety projector, and a deterministic fallback covers any failure.
 
 ```text
-ΔG = Goals Scored − Goals Conceded
+Net objective:   ΔG = Goals Scored − Goals Conceded
 ```
 
 ---
 
-##  2. Competition Context & Rules Compliance
+## 2. Environment Facts
 
-FIFA-AEGIS is designed around the official **Conv_Cup '26 / MLFootball environment** participant specification.
+All values come from the official `config/game.json`.
 
-| Parameter / Rule | Specification | Architectural Adaptation |
-| --- | --- | --- |
-| **Arena Dynamics** | 2D continuous pitch, elastic boundaries, static circular obstacles | Potential-field navigation and repulsive-vector obstacle avoidance |
-| **Match Format** | 1v1 autonomous duel with alternating `left` / `right` sides | Asymmetric coordinate normalization relative to the home goal |
-| **I/O Contract** | Strict JSON actions through `stdout`; diagnostics through `stderr` | Lightweight serialized action projector |
-| **Latency Budget** | Strictly `< 2.0 seconds` per decision turn | Sub-millisecond heuristic fallback for ordinary states |
-| **Execution Safety** | Zero networking, zero subprocesses, zero unapproved dependencies | Pure Python mathematical core |
-| **Tournament Engine** | Double-elimination bracket with aggregate goal tie-breakers | Dynamic risk scaling based on series aggregate scoreline |
+| Parameter | Value |
+| --- | --- |
+| Field | 100 wide × 140 tall (origin at bottom-left) |
+| Goal width | 36, centered on each short end (x from 32 to 68) |
+| Player radius / speed | 3 / 4 units per iteration |
+| Ball radius / speed | 1.5 / 8 units per iteration |
+| Possession radius | 5 |
+| Kick distances (power 1 / 2 / 3) | 32 / 64 / 96 |
+| Obstacles | 6 axis-aligned rectangles, 11 × 8, mirrored top and bottom |
+| Match length | 400 iterations, or 7 total goals |
+| Possession limit | 10 iterations, then the ball is released forward |
+| Loose-ball restart | Drop-ball at midfield after 20 iterations without progress |
+| Opening possession | `player_1` |
+
+### Rules That Shape the Strategy
+
+- **Sides:** Player 1 defends the bottom goal and attacks upward. Player 2 defends the top goal and attacks downward. The observation includes `attack_direction`.
+- **Movement:** eight directions plus `STAY`. Diagonal and straight moves have the same speed.
+- **Kicking:** only with possession. The ball then flies independently for the power's distance and bounces off walls and obstacles.
+- **Interception:** a moving ball is picked up by any player within ball radius + player radius (4.5).
+- **Stationary ball:** the nearest player within the possession radius (5) claims it.
+- **Tackles:** a newly won ball is protected for its first 3 iterations. After that, a moving challenger in contact (within 6.15) takes the ball, unless the owner kicks that same iteration.
+- **Possession timeout:** after 10 iterations of holding the ball, the engine kicks it forward at power 1.
+- **After a goal:** both players return to their start positions and the conceding side gets possession.
+- **No goalkeeper:** the open goal mouth is the only defense, so positioning matters.
+
+---
+
+## 3. Interface Contract
+
+The bot is a process that reads one JSON observation per line from `stdin` and writes exactly one JSON action per line to `stdout`.
+
+```json
+{"move": "UP_RIGHT"}
+```
+
+```json
+{"move": "UP", "kick": {"direction": "UP_LEFT", "power": 3}}
+```
+
+- Legal moves: `STAY`, `UP`, `UP_RIGHT`, `RIGHT`, `DOWN_RIGHT`, `DOWN`, `DOWN_LEFT`, `LEFT`, `UP_LEFT`.
+- Kick power is an integer from 1 to 3. A kick without possession is ignored.
+- Invalid, late, missing or malformed output becomes `STAY` and is recorded as an action error.
+
+```diff
++ stdout  → one JSON action per observation
+- stderr  → diagnostics only
+```
 
 > [!WARNING]
-> **Hard rules:** every decision must return in under **2.0 seconds**, with **zero networking, zero subprocesses and zero unapproved dependencies**. Breaking any of these risks disqualification.
+> Never print anything except the action JSON to `stdout`.
 
 ---
 
-##  3. System Architecture
+## 4. Competition Constraints
 
-The FIFA-AEGIS pipeline processes raw environmental observations through decoupled functional layers before producing an actuation payload.
+These come from `config/submission_policy.json` and the participant guide.
 
-### Core System Modules
+| Area | Rule |
+| --- | --- |
+| Dependencies | `allowed_dependencies` is empty, so standard library only (no NumPy, PyTorch or TensorFlow) |
+| Forbidden imports | `os`, `pickle`, `subprocess`, `socket`, `urllib`, `http`, `ctypes`, `importlib`, `multiprocessing`, `shutil` and others |
+| Forbidden calls | `eval`, `exec`, `compile`, `__import__`, filesystem-mutating `Path` methods |
+| Model files | JSON and other plain data only. `.pt`, `.pth`, `.pkl`, `.pickle`, `.joblib` are rejected |
+| Latency | One response within 2 seconds, at most 8,192 bytes |
+| Archive | At most 100 MB, 2,000 files, 512 KB per source file |
+| Required in ZIP root | `submission.json`, `README.md`, `requirements.txt` |
+| Organizer assets | Do not ship the organizer RL model unless the published rules allow it |
 
-| Module | Core Functionality | Primary Output |
-| --- | --- | --- |
-| **State Estimator** | Normalizes positions, infers relative velocities, ball trajectory, and obstacle margins | Structured kinematic state vector `z_t` |
-| **Opponent Model** | Tracks closing velocity, predicts tackling intent, and evaluates passing/shooting angles | Opponent threat and trajectory probabilities |
-| **Relational Map** | Constructs a spatial graph of the agent, opponent, ball, and field obstacles | Spatial feature embedding |
-| **Tactical Manager** | Determines operational mode: `ATTACK`, `DEFEND`, `COUNTER`, `RECOVER` | Active macro objective |
-| **Dynamic Risk Gate** | Computes allowable operational risk based on clock, goal margin, and threat | Scalar risk budget `R_t` |
-| **Action Planner** | Evaluates geometric clearance lines and scoring cones using tactical rules and local search | Candidate action trajectory |
-| **Action Projector** | Enforces physical velocity clamps, legal kick boundaries, and JSON schemas | Verified JSON action command |
-
----
-
-### 3.1 Mathematical State Representation
-
-The spatial environment is parsed into an invariant state frame:
-
-```text
-x_agent = [ p_x, p_y, v_x, v_y, d_ball, θ_ball, d_goal, θ_goal, possession ]
-```
-
-Where:
-
-- `p_x`, `p_y` = agent position
-- `v_x`, `v_y` = agent velocity
-- `d_ball` = distance to ball
-- `θ_ball` = relative ball angle
-- `d_goal` = distance to opponent goal
-- `θ_goal` = relative goal angle
-- `possession` = estimated possession state
-
-#### Obstacle Avoidance
-
-Obstacle interactions are modeled through an augmented repulsive vector:
-
-```text
-                 M       η
-F_repulse  =     Σ   ───────────  ·  û_repulse,k
-                k=1  (d_k − r_k)²
-```
-
-Where:
-
-- `d_k` = Euclidean distance to obstacle `k`
-- `r_k` = obstacle radius
-- `η` = repulsion strength
-- `û_repulse,k` = unit vector pointing away from the obstacle center
-- `M` = number of relevant obstacles
-
-This mechanism provides smooth obstacle avoidance while reducing the probability of corner-pinning and repeated movement cycles.
+**Tournament format:** double elimination. A tie has one to six games, alternates sides, and is decided on aggregate goals. An aggregate draw goes to a recorded seeded penalty shootout. Every game uses a hidden seed.
 
 ---
 
-## 🔁 4. Decision Algorithm & Control Hierarchy
+## 5. Architecture
 
-The operational pipeline follows a strict synchronous execution loop:
+Each decision runs the same short pipeline.
 
 ```text
-OBSERVE
-   ↓
-PREDICT
-   ↓
-PLAN
-   ↓
-ACT
-   ↓
-EVALUATE
-   ↓
-LEARN
+OBSERVE → NORMALIZE → PREDICT → CHOOSE MODE → PLAN → PROJECT → JSON ACTION
 ```
 
 ![AEGIS Decision Loop](assets./Loop.png)
 
-### AEGIS Decision Procedure
+| Layer | Responsibility |
+| --- | --- |
+| **State normalizer** | Mirrors coordinates by `attack_direction`, so one policy plays both sides |
+| **Ball predictor** | Projects the ball from its position, velocity and remaining kick distance, including wall and obstacle bounces |
+| **Tactical manager** | Chooses a mode from the possession state (below) |
+| **Action planner** | Picks movement, and a kick direction and power when in possession |
+| **Safety projector** | Rejects moves that leave the field or hit an obstacle, and validates the JSON |
+| **Fallback policy** | Simple deterministic behavior used if planning fails or errors |
 
-```text
-Algorithm AEGIS-DECIDE(observation):
+### Tactical Modes
 
-    z      ← STATE_ESTIMATE(observation)
+The game has three possession states (ours, theirs, loose), which map to four modes.
 
-    threat ← OPPONENT_MODEL(
-                 z,
-                 match_history
-             )
-
-    mode   ← TACTICAL_MANAGER(
-                 z,
-                 score_differential,
-                 time_remaining
-             )
-
-    risk   ← DYNAMIC_RISK_GATE(
-                 mode,
-                 score_differential,
-                 time_remaining,
-                 threat
-             )
-
-    if IS_HIGH_LEVERAGE(z, mode):
-
-        action ← SHORT_HORIZON_PLANNER(
-                     z,
-                     risk,
-                     mode
-                 )
-
-    else:
-
-        action ← HEURISTIC_TACTICAL_POLICY(
-                     z,
-                     mode
-                 )
-
-    return ACTION_PROJECTOR(action)
-```
-
-The architecture therefore separates:
-
-1. **Perception**
-2. **Opponent prediction**
-3. **Tactical state selection**
-4. **Risk allocation**
-5. **Trajectory planning**
-6. **Physical action validation**
-
----
-
-### 4.1 Dynamic Risk Budget
-
-The agent regulates strategic conservation versus aggressive pressure using a parameterized dynamic risk gate:
-
-```text
-Risk_t = clip( r_0 + k_1·ΔMargin + k_2·T_late + k_3·D_box − k_4·Threat_counter ,  r_min ,  r_max )
-```
-
-Where:
-
-- `r_0` = baseline risk
-- `ΔMargin` = current goal-margin pressure
-- `T_late` = normalized late-game factor
-- `D_box` = defensive-box pressure factor
-- `Threat_counter` = estimated counter-attack threat
-- `r_min` = minimum allowed risk
-- `r_max` = maximum allowed risk
-
-```diff
-+ TRAILING LATE   →  risk budget rises toward r_max   (attack!)
-- LEADING         →  risk budget falls toward r_min   (protect!)
-```
-
-#### 🔺 Trailing in the Final Minutes
-
-When the agent is behind late in the match, the risk budget increases toward `r_max`.
-
-This enables:
-
-- Direct goal rushes
-- Aggressive shooting
-- High-line interceptions
-- Reduced conservative positioning
-- Faster transitions
-
-####  Defending a Lead
-
-When protecting a lead, the risk budget contracts toward `r_min`.
-
-This prioritizes:
-
-- Positional containment
-- Boundary clearances
-- Safe recovery routes
-- Reduced unnecessary ball carrying
-- Defensive stability near the own goal
-
----
-
-##  5. Tactical Heuristic Override Layers
-
-To ensure reliable execution during tournament matches and avoid RL edge-case failures such as circling the ball, stalling near boundaries, or repeatedly approaching an obstacle from the same direction, FIFA-AEGIS implements deterministic safety overrides.
-
-> [!CAUTION]
-> Overrides **bypass normal planning**. When a defensive hazard or a clean shooting window is detected, the agent acts immediately instead of deliberating.
-
-### Tactical Override Flow
-
-```text
-                    +-------------------------+
-                    | Incoming Decision State |
-                    +------------+------------+
-                                 |
-                 +---------------+---------------+
-                 |                               |
-                 v                               v
-       [Defensive Hazard Zone?]       [Clinical Shooting Window?]
-       - Ball in defensive 3rd        - Open trajectory to net
-       - Opponent closing in          - Within effective kick range
-       - Distance to net < 0.25       - Obstacle occlusion = False
-                 |                               |
-          YES    v                        YES    v
-       +----------------------+        +----------------------+
-       | Force Clearance Kick |        | Force Direct Strike  |
-       +----------------------+        +----------------------+
-                 |                               |
-                 +---------------+---------------+
-                                 |
-                           NO (Default)
-                                 |
-                                 v
-                    +-------------------------+
-                    | Standard Pursuit/Move   |
-                    +-------------------------+
-```
-
----
-
-### 5.1 Emergency Clearance Override
-
-When the ball enters the defensive third and the opponent is within critical intercept proximity, the agent bypasses intermediate pathing and executes an immediate high-velocity clearance toward a safe opposing-field direction.
-
-#### Objective
-
-Prevent:
-
-- Defensive-zone turnovers
-- Repeated ball trapping
-- Dangerous close-range opponent possession
-- Goal-line stalls
-
----
-
-### 5.2 Clinical Finishing Cone
-
-If an unobstructed line of sight connects the ball to the opponent's net and the agent is within effective kicking range, the controller can bypass ordinary movement behavior and execute a direct maximum-force strike toward an open goal vertex.
-
-#### Conditions
-
-```text
-Ball within kicking range
-        +
-Clear shooting trajectory
-        +
-No obstacle occlusion
-        +
-Goal opening available
-        ↓
-DIRECT STRIKE
-```
-
-This prioritizes goal conversion over unnecessary repositioning.
-
----
-
-### 5.3 Obstacle Dynamic Damping
-
-The obstacle controller modifies approach angles smoothly around static obstacles.
-
-The purpose is to reduce:
-
-- Corner pinning
-- Oscillatory movement
-- Repeated collision attempts
-- Unproductive movement cycles
-- Physics-induced stalls
-
----
-
-##  6. Tactical Operating Modes
-
-FIFA-AEGIS operates through four primary tactical modes.
-
-| Mode | Primary Objective | Typical Behavior |
+| Mode | When | Behavior |
 | --- | --- | --- |
-| 🟥 `ATTACK` | Maximize scoring probability | Forward pressure, shooting, aggressive positioning |
-| 🟦 `DEFEND` | Minimize concession probability | Containment, interception, safe clearances |
-| 🟧 `COUNTER` | Exploit opponent transition | Rapid forward movement after possession recovery |
-| 🟩 `RECOVER` | Restore stable tactical state | Ball recovery, repositioning, defensive reset |
+| `ATTACK` | We hold the ball | Carry forward, evade the defender, shoot when the lane is open |
+| `DEFEND` | Opponent holds the ball | Press from the goal side and cut the shooting line |
+| `INTERCEPT` | Ball is moving | Move to the predicted interception point |
+| `CLAIM` | Ball is stationary | Take the shortest obstacle-free path to the ball |
 
-The tactical manager dynamically transitions between these states according to:
+### Planning Details
 
-- Ball position
-- Possession
-- Goal differential
-- Time remaining
-- Opponent proximity
-- Counter-attack threat
-- Defensive danger
-- Shooting opportunity
+- **Shooting lane:** a shot is taken only when the straight path to the goal mouth does not cross an obstacle rectangle. Wall bounces are not relied on.
+- **Kick power:** chosen from the distance to goal, and treated as a tunable parameter, since 32 / 64 / 96 units give the ball 4 / 8 / 12 iterations of flight.
+- **Possession timeout:** the agent releases the ball on its own terms before the engine's forced kick at 10 iterations.
+- **Obstacle avoidance:** candidate moves are checked against the obstacle rectangles and walls, and the move closest to the desired direction is chosen.
+- **Fallback:** if any step raises an error, the bot returns a safe move toward the ball (or `STAY`), so the action is always valid.
 
 ---
 
-##  7. Training Strategy & Curriculum Pipeline
+## 6. Parameter Tuning and Training
 
-FIFA-AEGIS supports progressive multi-stage training against organizer benchmarks and controlled self-play environments.
+The tactical controller exposes its important constants as parameters, for example kick power by distance, shooting range, pressing offset, dribble side-step, and defender-ahead thresholds.
 
-The curriculum gradually increases tactical complexity instead of exposing the policy to the full problem immediately.
+### Tuning loop
+
+1. Define a pool of opponents: organizer RL, the simple baseline, aggressive, counter-attack, and frozen earlier versions of our own bot.
+2. Generate candidate parameter sets with random search.
+3. Evaluate each candidate on hundreds of seeds, **on both sides**, with the official `config/game.json`.
+4. Keep a candidate only if it also wins on a separate set of unseen seeds.
+
+The simulator is dependency-free and fast. In a measured run, 300 matches took about 24 seconds, so a candidate can be scored in seconds.
+
+### Optional learned layer
+
+The kit includes `train_bot.py`, a pure-Python tabular reinforcement learner that writes a sparse JSON model. The starter policy uses it as an advisor and falls back to the tactical rules in unfamiliar states.
+
+- Training episodes are shortened by the trainer (240 iterations, 5 goals). Final evaluation always uses the official 400 iterations and 7 goals.
+- The learned model is promoted only if it beats the tuned rules on unseen seeds.
+
+### Staged training schedule
 
 ![Training Curriculum](assets./Curriculum.png)
 
-### Curriculum
-
-| Stage | Training Target / Scenario | Primary Objective | Termination Criteria |
-| --- | --- | --- | --- |
-| **C0** | Solo Navigation & Obstacle Traversal | Collision-free target reaching and trajectory damping | Zero obstacle traps across 500 seeds |
-| **C1** | Ball Control & Approach Dynamics | Kinetic interception and straight-line shooting | >85% open-goal conversion rate |
-| **C2** | Baseline Opponent (`simple`) | 1v1 containment, lane blocking, and recovery | Consistent clean-sheet victory |
-| **C3** | Organizer RL (`organizer-rl` / Balanced United) | Transition under pressure and turnover mitigation | Net positive goal differential (ΔG > 0) |
-| **C4** | Shared-Policy Self-Play | Symmetrical robustness and elimination of side bias | Stable win rate across alternating sides |
-| **C5** | Adversarial Population Pool | Hard-negative exploitation against counter-attackers | Minimize variance of ΔG across held-out seeds |
+| Stage | Scenario | Goal |
+| --- | --- | --- |
+| **C0** | Navigation without obstacles | Reach targets without wall or obstacle traps |
+| **C1** | Ball approach and straight shots | Reliable open-goal conversion |
+| **C2** | Simple baseline opponent | Beat the readable baseline on both sides |
+| **C3** | Organizer RL opponent | Positive goal differential |
+| **C4** | Shared-policy self-play | Remove side bias |
+| **C5** | Frozen snapshots of our own bot | Avoid regressions and overfitting |
 
 ---
 
-### 7.1 Curriculum Philosophy
+## 7. Evaluation Protocol
 
-The training progression follows:
+Every version is judged on matches, not on one attractive game.
 
-```text
-Navigation
-    ↓
-Ball Control
-    ↓
-Basic Opponent
-    ↓
-Strong Opponent
-    ↓
-Self-Play
-    ↓
-Adversarial Population
-    ↓
-Hidden-Seed Robustness
-```
+| Metric | Definition |
+| --- | --- |
+| **Win / Draw / Loss** | Counted per match, with both sides played on every seed |
+| **Goal differential per match** | (Goals scored − goals conceded) / matches |
+| **Action errors** | Must be zero in `validate_submission.py` |
+| **Decision time** | Must stay far below 2 seconds |
+| **Seed spread** | Variation of goal differential across unseen obstacle layouts |
+
+Rules of thumb:
+
+- Use separate training and evaluation seed sets.
+- Always measure both Player 1 and Player 2, because Player 1 opens with possession.
+- Keep the previous model as a frozen benchmark and compare on identical seeds.
+- Change one major idea at a time.
+
+---
+
+## 8. Baseline Measurements (Organizer Starter Bot)
+
+These numbers describe the **unmodified starter heuristics** from `submission_kit`, not FIFA-AEGIS. They give the bar to beat.
+
+**Method:** official `config/game.json`, in-process engine, 150 seeds with both sides played (300 matches per row), matches of 400 iterations or 7 goals.
+
+| Starter bot vs | W / D / L | Goals for / against | Goal diff per match |
+| --- | --- | --- | --- |
+| Organizer RL bot | 160 / 63 / 77 | 548 / 379 | +0.56 |
+| Aggressive bot | 142 / 50 / 108 | 521 / 402 | +0.40 |
+| Counter-attack bot | 158 / 79 / 63 | 716 / 261 | +1.52 |
+| Simple baseline (mirror) | 113 / 74 / 113 | 521 / 521 | 0.00 |
+
+**Kick-power sensitivity** (starter bot vs the organizer RL bot, same 300 matches):
+
+| Starter kick power | W / D / L | Goal diff per match |
+| --- | --- | --- |
+| 3 (default) | 160 / 63 / 77 | +0.56 |
+| 2 | 170 / 68 / 62 | +0.73 |
+| 1 | 179 / 52 / 69 | +1.07 |
+
+Takeaways: the organizer RL bot is beatable with simple rules, one constant already moves the result, and the mirror match is even, so other teams starting from the same kit will be close to this baseline.
 
 > [!NOTE]
-> The objective is **not** merely to maximize training-set win rate.
-
-Instead, the curriculum emphasizes:
-
-- Generalization
-- Seed invariance
-- Side invariance
-- Defensive recovery
-- Stable goal differential
-- Reduced catastrophic failures
+> Results use the organizer model bundled with the participant kit. Tournament seeds are hidden, so treat these as a guide, not a guarantee.
 
 ---
 
-##  8. Comprehensive Evaluation Protocol
-
-Agent versions are evaluated across deterministic and held-out random seeds.
-
-The evaluation process prioritizes **goal differential and tournament performance** over superficial possession statistics.
-
-### Primary Tournament Metrics
-
-| Metric | Definition | Evaluation Purpose |
-| --- | --- | --- |
-| **Goal Differential (ΔG)** | Σ (Goals Scored − Goals Conceded) | Primary performance and tie-break metric |
-| **Win Rate (W_R)** | (N_wins / N_total_matches) × 100 | High-level series performance |
-| **Shot Conversion Rate** | Goals Scored / Shots on Goal | Finishing efficiency |
-| **Defensive Turnover Latency** | Ticks from possession loss to ball recovery | Defensive transition quality |
-| **Seed Invariance Index** | Variance of ΔG across randomized layouts | Generalization robustness |
-
----
-
-### 8.1 Goal Differential
-
-```text
-ΔG = Goals Scored − Goals Conceded
-```
-
-Goal differential is treated as the primary optimization objective because possession, movement distance, and other intermediate statistics do not directly determine match victory.
-
----
-
-### 8.2 Win Rate
-
-```text
-W_R = ( N_wins / N_total_matches ) × 100
-```
-
-Win rate provides the primary measure of match-level competitiveness.
-
----
-
-### 8.3 Shot Conversion Rate
-
-```text
-SCR = Goals Scored / Total Shots on Goal
-```
-
-This metric evaluates the quality of the finishing and clinical-shooting heuristics.
-
----
-
-### 8.4 Defensive Turnover Latency
-
-Defensive turnover latency measures the number of environment ticks required to recover possession after losing the ball.
-
-Lower values indicate faster defensive recovery.
-
----
-
-### 8.5 Seed Invariance
-
-Robustness is evaluated by measuring the variance of goal differential across unseen obstacle placements and random seeds.
-
-A robust agent should achieve:
-
-```text
-Var(ΔG) → min
-```
-
-while maintaining positive average goal differential.
-
----
-
-## 🧪 9. Architecture Ablation Matrix
-
-To determine the contribution of each major architecture component, FIFA-AEGIS can be evaluated through controlled ablations.
-
-| Variant | Disabled Component | Research Hypothesis |
-| --- | --- | --- |
-| **AEGIS-A** | Opponent Intent Model | Lower defensive recovery quality and greater susceptibility to counters |
-| **AEGIS-B** | Dynamic Risk Gate | Static or overly passive play when trailing late |
-| **AEGIS-C** | Tactical Clearance Override | Higher probability of catastrophic turnovers in the defensive zone |
-| **AEGIS-Full** | None | Complete integrated FIFA-AEGIS system |
-
----
-
-### 9.1 AEGIS-A — No Opponent Intent Model
-
-This version removes explicit opponent trajectory and threat estimation.
-
-#### Expected Effect
-
-The agent may:
-
-- React later to opponent approaches
-- Misjudge closing velocity
-- Fail to anticipate counters
-- Recover possession less efficiently
-
----
-
-### 9.2 AEGIS-B — No Dynamic Risk Gate
-
-This version removes adaptive risk allocation.
-
-#### Expected Effect
-
-The agent may:
-
-- Remain too conservative while trailing
-- Remain unnecessarily aggressive while leading
-- Fail to adapt to match clock
-- Produce less effective tournament-level decision making
-
----
-
-### 9.3 AEGIS-C — No Tactical Clearance Override
-
-This version disables deterministic emergency defensive behavior.
-
-#### Expected Effect
-
-The agent may:
-
-- Over-plan in dangerous areas
-- Carry the ball unnecessarily near its own goal
-- Become trapped in local movement cycles
-- Concede avoidable goals
-
----
-
-### 9.4 AEGIS-Full
-
-The complete system combines:
-
-```text
-State Estimation
-       +
-Opponent Modeling
-       +
-Relational Mapping
-       +
-Tactical Management
-       +
-Dynamic Risk Gating
-       +
-Local Planning
-       +
-Deterministic Safety Overrides
-       +
-Action Projection
-```
-
-This represents the reference FIFA-AEGIS architecture.
-
----
-
-##  10. Runtime Safety & Action Projection
-
-The final action must pass through the **Action Projector** before being sent to the tournament environment.
-
-The projector is responsible for enforcing:
-
-- Velocity limits
-- Legal kick parameters
-- Valid action types
-- Coordinate bounds
-- JSON serialization
-- Output-size constraints
-- Fallback actions
-
-### Action Pipeline
-
-```text
-Planner Output
-      ↓
-Physical Constraints
-      ↓
-Legal Action Check
-      ↓
-Coordinate Validation
-      ↓
-JSON Serialization
-      ↓
-stdout
-```
-
-Diagnostics and debugging information are kept separate from the action channel:
-
-```diff
-+ stdout  → tournament actions
-- stderr  → diagnostics / debugging
-```
-
-> [!WARNING]
-> Never print debug text to `stdout`. Anything other than a valid JSON action there can corrupt the competition protocol.
-
----
-
-##  11. Deterministic Fallback Policy
-
-A core reliability principle of FIFA-AEGIS is:
-
-> [!IMPORTANT]
-> **The agent must always have a valid action.**
-
-If the planner fails, times out, or encounters an unexpected state, the controller falls back to a lightweight deterministic policy.
-
-```text
-Planner Available?
-      |
-   YES ─────────────→ Planned Action
-      |
-      NO
-      ↓
-Heuristic Tactical Policy
-      |
-      ↓
-Action Projector
-      |
-      ↓
-Valid Action
-```
-
-The fallback controller prioritizes:
-
-1. Ball safety
-2. Goal direction
-3. Defensive recovery
-4. Legal movement
-5. Immediate action validity
-
----
-
-##  12. Repository Structure
+## 9. Repository Structure
 
 ```text
 FIFA-AEGIS-AGENT/
-│
 ├── assets/
 │   ├── Architecture.png
 │   ├── Loop.png
 │   └── Curriculum.png
-│
-├── my_team/
-│   ├── submission.json
-│   │
-│   └── team_bot/
-│       ├── __init__.py
-│       ├── bot.py
-│       ├── policy.py
-│       │
-│       └── models/
-│           └── trained_policy.json
-│
+├── README.md                      (this file)
+├── config/ soccer_env/ viewer/    (organizer kit, unchanged)
+├── organizer_rl_bot/ reference_bot/
+├── run_match.py live_viewer.py train_bot.py
+├── validate_submission.py package_submission.py check_submission.py
 ├── tests/
-│   └── test_standalone.py
-│
-├── README.md
-│
-└── requirements.txt
+├── tools/                         (planned: benchmark and tuning scripts)
+└── my_team/                       (our submission; becomes the ZIP root)
+    ├── submission.json
+    ├── README.md
+    ├── requirements.txt
+    └── team_bot/
+        ├── __init__.py
+        ├── bot.py
+        ├── policy.py
+        └── models/
 ```
-
-### Directory Description
 
 | Path | Purpose |
 | --- | --- |
-| `assets/` | Architecture and training diagrams |
-| `my_team/` | Competition submission |
-| `my_team/submission.json` | Tournament manifest and model pointer |
-| `my_team/team_bot/bot.py` | Process entry point and I/O loop |
-| `my_team/team_bot/policy.py` | Core FIFA-AEGIS decision controller |
-| `my_team/team_bot/models/` | Serialized policy/model artifacts |
-| `tests/` | Standalone unit and kinematic tests |
-| `requirements.txt` | Minimal runtime dependencies |
+| `my_team/` | The competition submission. Its contents become the ZIP root |
+| `my_team/submission.json` | Public team name and launch command |
+| `my_team/team_bot/bot.py` | Protocol loop (stdin and stdout JSON lines) |
+| `my_team/team_bot/policy.py` | FIFA-AEGIS decision logic |
+| `my_team/team_bot/models/` | Optional learned model (JSON) |
+| `my_team/README.md`, `requirements.txt` | Required by the ZIP checker |
+| `tools/` | Planned benchmark and parameter-search scripts |
 
 ---
 
-##  13. Quickstart
+## 10. Quickstart
 
-### 13.1 Environment Verification
+Run everything from the organizer kit folder (PowerShell).
 
-Run the participant-kit unit tests:
+### 10.1 Verify the kit
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-Expected result:
-
-```text
-OK
-```
-
-The test suite verifies basic physics assumptions, kinematic calculations, and action validity.
-
----
-
-##  14. Live Match Evaluation
-
-Benchmark the agent against the organizer reference model:
+### 10.2 Play a match against the organizer bot
 
 ```powershell
-python live_viewer.py --submission my_team/submission.json --opponent organizer-rl --seed 101
+python run_match.py --submission my_team/submission.json --opponent organizer-rl --seed 101
 ```
 
-This allows visual inspection of:
+Use `--opponent simple` for the readable baseline.
 
-- Agent movement
-- Ball pursuit
-- Shooting behavior
-- Defensive recovery
-- Obstacle avoidance
-- Opponent interaction
+### 10.3 Watch it in the browser
 
----
+```powershell
+python live_viewer.py --submission my_team/submission.json --seed 101
+```
 
-##  15. Curriculum Training
-
-Execute self-play training with opponent rotation:
+### 10.4 Train the optional learned layer
 
 ```powershell
 python train_bot.py `
-  --episodes 2000 `
+  --episodes 5000 `
   --opponents curriculum `
   --self-play-ratio 0.35 `
   --output my_team/team_bot/models/trained_policy.json
 ```
 
-The training process progressively exposes the policy to increasingly difficult environments.
-
----
-
-##  16. Tournament Validation
-
-Before packaging a submission, validate the agent against multiple matches and alternating sides:
+### 10.5 Validate the real process
 
 ```powershell
 python validate_submission.py `
   --submission my_team/submission.json `
-  --matches-per-side 5
+  --matches-per-side 2
 ```
 
-The validation process should verify:
+The result must report zero participant action errors.
 
-- Zero action errors
-- Valid JSON output
-- Legal actions
-- Stable runtime
-- Correct side handling
-- Acceptable latency
-- No protocol corruption
-
----
-
-##  17. Submission Packaging
-
-Package the final team:
+### 10.6 Package and check
 
 ```powershell
 python package_submission.py my_team dist/my-team.zip
+python check_submission.py dist/my-team.zip --report dist/my-team-report.json
 ```
 
-Then inspect the generated package:
-
-```powershell
-python check_submission.py `
-  dist/my-team.zip `
-  --report dist/my-team-report.json
-```
-
-A valid release should contain the complete runtime required by the competition without unnecessary files or unsupported dependencies.
+Submit the exact ZIP that passed and record its SHA-256.
 
 ---
 
-##  18. End-to-End Development Workflow
+## 11. Submission Checklist
 
-The recommended development workflow is:
-
-```text
-              ┌──────────────────────┐
-              │ Environment Setup    │
-              └──────────┬───────────┘
-                         ↓
-              ┌──────────────────────┐
-              │ Unit Tests           │
-              └──────────┬───────────┘
-                         ↓
-              ┌──────────────────────┐
-              │ C0 Navigation        │
-              └──────────┬───────────┘
-                         ↓
-              ┌──────────────────────┐
-              │ C1 Ball Control      │
-              └──────────┬───────────┘
-                         ↓
-              ┌──────────────────────┐
-              │ C2 Simple Opponent   │
-              └──────────┬───────────┘
-                         ↓
-              ┌──────────────────────┐
-              │ C3 Organizer RL      │
-              └──────────┬───────────┘
-                         ↓
-              ┌──────────────────────┐
-              │ C4 Self-Play         │
-              └──────────┬───────────┘
-                         ↓
-              ┌──────────────────────┐
-              │ C5 Adversarial Pool  │
-              └──────────┬───────────┘
-                         ↓
-              ┌──────────────────────┐
-              │ Hidden Seed Tests    │
-              └──────────┬───────────┘
-                         ↓
-              ┌──────────────────────┐
-              │ Tournament Validate  │
-              └──────────┬───────────┘
-                         ↓
-              ┌──────────────────────┐
-              │ Package Submission   │
-              └──────────────────────┘
-```
+- Official tests pass.
+- Final tuning and evaluation used the unmodified `config/game.json`.
+- Both sides and many seeds were covered, with unseen validation seeds for selection.
+- `stdout` contains only action JSON.
+- Every action returns well inside the 2-second limit.
+- Protocol validation reports zero action errors.
+- The bot runs offline with the standard library only.
+- `requirements.txt` lists no unapproved packages.
+- The ZIP was made with the clean packager and passes the static checker.
+- The final ZIP is unchanged after its hash is recorded.
 
 ---
 
-##  19. Research Motivation
+## 12. Project Status
 
-FIFA-AEGIS is motivated by research demonstrating that multi-agent football environments require robust handling of:
-
-- Long-horizon decision making
-- Multi-agent interaction
-- Curriculum learning
-- Self-play
-- Distribution shift
-- Tactical adaptation
-- Robust policy execution
-
-Rather than relying exclusively on a monolithic neural policy, FIFA-AEGIS combines learned components with deterministic geometric and tactical controllers.
-
-The design therefore follows a hybrid philosophy:
-
-```text
-Perception + Learning + Planning + Deterministic Safety
-```
-
-This provides a practical balance between adaptability and tournament reliability.
+- [x] Official environment studied and rules documented
+- [x] Starter bot benchmarked on 300 matches per opponent
+- [ ] Benchmark and tuning scripts (`tools/`)
+- [ ] Shooting-lane check against obstacle rectangles
+- [ ] Kick power chosen from distance to goal
+- [ ] Ball interception using predicted bounces
+- [ ] Goal-side defensive positioning
+- [ ] Possession-timeout management
+- [ ] Automated parameter search with unseen-seed validation
+- [ ] Optional learned layer (only if it beats the tuned rules)
+- [ ] Final validation, packaging and static check
 
 ---
 
-##  20. Research References
+## 13. References
 
 1. Kurach et al. (2020). **Google Research Football: A Novel Reinforcement Learning Environment.** AAAI 2020, 34(04), 4501–4510.
 2. Lin et al. (2023). **TiZero: Mastering Multi-Agent Football with Curriculum Learning and Self-Play.** arXiv:2302.07515.
-3. Song et al. (2024). **An Empirical Study on Multi-Agent Scenarios in Football Simulation.** *Machine Intelligence Research*, 21, 549–570.
-4. Liu (2026). **Relational Multi-Agent Tactical Learning for Competitive Football Environments.** *Discover Artificial Intelligence*, 6, 803.
-5. **Conv_Cup '26 Guidelines.** *FIFA of Bots Autonomous Soccer Competition*, IIT (ISM) Dhanbad.
+3. Song et al. (2023). **An Empirical Study on Google Research Football Multi-agent Scenarios.** arXiv:2305.09458.
+4. **Conv_Cup '26 AI Soccer Arena participant kit and guides** (`participants/README.md`, `README_TRAINING_AND_SUBMISSION.md`), IIT (ISM) Dhanbad.
 
----
-
-##  21. Design Philosophy
-
-FIFA-AEGIS is built around a simple principle:
-
-> [!TIP]
-> **Do not optimize for looking intelligent. Optimize for scoring goals while minimizing avoidable goals conceded.**
-
-The architecture therefore prioritizes:
-
-```text
-Goal Differential
-      ↓
-Tactical Decision Quality
-      ↓
-Risk-Aware Planning
-      ↓
-Robust Execution
-      ↓
-Seed Generalization
-      ↓
-Tournament Reliability
-```
-
-The system deliberately separates **what the agent wants to do** from **how the agent physically executes that decision**.
-
-This allows individual components to be improved, tested, and ablated without destabilizing the entire controller.
-
----
-
-##  22. Final Architecture
-
-The complete FIFA-AEGIS system can be summarized as:
-
-```text
-                    ENVIRONMENT
-                         │
-                         ▼
-                ┌─────────────────┐
-                │   OBSERVATION   │
-                └────────┬────────┘
-                         │
-                         ▼
-                ┌─────────────────┐
-                │ STATE ESTIMATOR │
-                └────────┬────────┘
-                         │
-              ┌──────────┴──────────┐
-              │                     │
-              ▼                     ▼
-       ┌──────────────┐      ┌───────────────┐
-       │ RELATIONAL   │      │   OPPONENT    │
-       │     MAP      │      │     MODEL     │
-       └──────┬───────┘      └───────┬───────┘
-              │                      │
-              └──────────┬───────────┘
-                         │
-                         ▼
-                ┌─────────────────┐
-                │ TACTICAL        │
-                │ MANAGER         │
-                └────────┬────────┘
-                         │
-                         ▼
-                ┌─────────────────┐
-                │ DYNAMIC RISK    │
-                │ GATE            │
-                └────────┬────────┘
-                         │
-              ┌──────────┴──────────┐
-              │                     │
-              ▼                     ▼
-       ┌──────────────┐      ┌────────────────┐
-       │ HEURISTIC    │      │ HIGH-LEVERAGE  │
-       │ POLICY       │      │ LOCAL PLANNER  │
-       └──────┬───────┘      └───────┬────────┘
-              │                      │
-              └──────────┬───────────┘
-                         │
-                         ▼
-                ┌─────────────────┐
-                │ TACTICAL        │
-                │ OVERRIDES       │
-                └────────┬────────┘
-                         │
-                         ▼
-                ┌─────────────────┐
-                │ ACTION          │
-                │ PROJECTOR       │
-                └────────┬────────┘
-                         │
-                         ▼
-                    JSON ACTION
-                         │
-                         ▼
-                    ENVIRONMENT
-                         │
-                         ▼
-                      RESULT
-                         │
-                         ▼
-                    EVALUATION
-                         │
-                         ▼
-                      LEARNING
-```
-
----
-
-##  23. Summary
-
-**FIFA-AEGIS** is a modular autonomous football architecture designed for competitive 2D 1v1 environments.
-
-Its central design principle is the separation of:
-
-- **Spatial understanding**
-- **Opponent prediction**
-- **Tactical intent**
-- **Risk management**
-- **Local trajectory planning**
-- **Deterministic safety**
-- **Action execution**
-
-The resulting architecture is intended to provide a robust alternative to purely monolithic policies by combining adaptive learning with deterministic tactical safeguards.
-
-### FIFA-AEGIS in one line
-
-> [!TIP]
-> **Observe the field, predict the threat, allocate the risk, choose the objective, execute safely, and optimize for the scoreboard.**
+The Google Research Football and TiZero papers inspired the curriculum and self-play ideas. No code from those projects is used.
 
 ---
 
 <p align="center">
   <b>FIFA-AEGIS — Adaptive Expected-Goal Intelligence System</b><br>
-  <i>Built for autonomous competitive football research and Conv_Cup '26.</i>
+  <i>Built for the Conv_Cup '26 AI Soccer Arena.</i>
 </p>
