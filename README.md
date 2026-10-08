@@ -13,7 +13,7 @@ A research-grounded, modular control architecture that decouples **spatial estim
 
 ---
 
-## 🎯 1. Executive Summary & Design Thesis
+##  1. Executive Summary & Design Thesis
 
 Modern reinforcement learning agents in simulated sports often suffer from **policy collapse, catastrophic forgetting, and severe sensitivity to seed initialization** when trained as single end-to-end monolithic networks.
 
@@ -39,7 +39,7 @@ The core objective:
 
 ---
 
-## 📜 2. Competition Context & Rules Compliance
+##  2. Competition Context & Rules Compliance
 
 FIFA-AEGIS is designed around the official **Conv_Cup '26 / MLFootball environment** participant specification.
 
@@ -57,7 +57,7 @@ FIFA-AEGIS is designed around the official **Conv_Cup '26 / MLFootball environme
 
 ---
 
-## 🧠 3. System Architecture
+##  3. System Architecture
 
 The FIFA-AEGIS pipeline processes raw environmental observations through decoupled functional layers before producing an actuation payload.
 
@@ -224,7 +224,7 @@ This enables:
 - Reduced conservative positioning
 - Faster transitions
 
-#### 🛡️ Defending a Lead
+####  Defending a Lead
 
 When protecting a lead, the risk budget contracts toward `r_min`.
 
@@ -238,7 +238,7 @@ This prioritizes:
 
 ---
 
-## 🚨 5. Tactical Heuristic Override Layers
+##  5. Tactical Heuristic Override Layers
 
 To ensure reliable execution during tournament matches and avoid RL edge-case failures such as circling the ball, stalling near boundaries, or repeatedly approaching an obstacle from the same direction, FIFA-AEGIS implements deterministic safety overrides.
 
@@ -328,7 +328,7 @@ The purpose is to reduce:
 
 ---
 
-## 🎮 6. Tactical Operating Modes
+##  6. Tactical Operating Modes
 
 FIFA-AEGIS operates through four primary tactical modes.
 
@@ -352,7 +352,7 @@ The tactical manager dynamically transitions between these states according to:
 
 ---
 
-## 📈 7. Training Strategy & Curriculum Pipeline
+##  7. Training Strategy & Curriculum Pipeline
 
 FIFA-AEGIS supports progressive multi-stage training against organizer benchmarks and controlled self-play environments.
 
@@ -407,7 +407,7 @@ Instead, the curriculum emphasizes:
 
 ---
 
-## 📊 8. Comprehensive Evaluation Protocol
+##  8. Comprehensive Evaluation Protocol
 
 Agent versions are evaluated across deterministic and held-out random seeds.
 
@@ -561,7 +561,7 @@ This represents the reference FIFA-AEGIS architecture.
 
 ---
 
-## 🔒 10. Runtime Safety & Action Projection
+##  10. Runtime Safety & Action Projection
 
 The final action must pass through the **Action Projector** before being sent to the tournament environment.
 
@@ -603,7 +603,7 @@ Diagnostics and debugging information are kept separate from the action channel:
 
 ---
 
-## 🛟 11. Deterministic Fallback Policy
+##  11. Deterministic Fallback Policy
 
 A core reliability principle of FIFA-AEGIS is:
 
@@ -638,7 +638,7 @@ The fallback controller prioritizes:
 
 ---
 
-## 📁 12. Repository Structure
+##  12. Repository Structure
 
 ```text
 FIFA-AEGIS-AGENT/
@@ -682,7 +682,7 @@ FIFA-AEGIS-AGENT/
 
 ---
 
-## 🚀 13. Quickstart
+##  13. Quickstart
 
 ### 13.1 Environment Verification
 
@@ -702,7 +702,7 @@ The test suite verifies basic physics assumptions, kinematic calculations, and a
 
 ---
 
-## 🏟️ 14. Live Match Evaluation
+##  14. Live Match Evaluation
 
 Benchmark the agent against the organizer reference model:
 
@@ -721,7 +721,7 @@ This allows visual inspection of:
 
 ---
 
-## 🏋️ 15. Curriculum Training
+##  15. Curriculum Training
 
 Execute self-play training with opponent rotation:
 
@@ -737,7 +737,7 @@ The training process progressively exposes the policy to increasingly difficult 
 
 ---
 
-## ✅ 16. Tournament Validation
+##  16. Tournament Validation
 
 Before packaging a submission, validate the agent against multiple matches and alternating sides:
 
@@ -759,7 +759,7 @@ The validation process should verify:
 
 ---
 
-## 📦 17. Submission Packaging
+##  17. Submission Packaging
 
 Package the final team:
 
@@ -779,7 +779,7 @@ A valid release should contain the complete runtime required by the competition 
 
 ---
 
-## 🗺️ 18. End-to-End Development Workflow
+##  18. End-to-End Development Workflow
 
 The recommended development workflow is:
 
@@ -831,7 +831,7 @@ The recommended development workflow is:
 
 ---
 
-## 🔬 19. Research Motivation
+##  19. Research Motivation
 
 FIFA-AEGIS is motivated by research demonstrating that multi-agent football environments require robust handling of:
 
@@ -855,7 +855,7 @@ This provides a practical balance between adaptability and tournament reliabilit
 
 ---
 
-## 📚 20. Research References
+##  20. Research References
 
 1. Kurach et al. (2020). **Google Research Football: A Novel Reinforcement Learning Environment.** AAAI 2020, 34(04), 4501–4510.
 2. Lin et al. (2023). **TiZero: Mastering Multi-Agent Football with Curriculum Learning and Self-Play.** arXiv:2302.07515.
@@ -865,7 +865,7 @@ This provides a practical balance between adaptability and tournament reliabilit
 
 ---
 
-## 💡 21. Design Philosophy
+##  21. Design Philosophy
 
 FIFA-AEGIS is built around a simple principle:
 
@@ -894,7 +894,7 @@ This allows individual components to be improved, tested, and ablated without de
 
 ---
 
-## 🧩 22. Final Architecture
+##  22. Final Architecture
 
 The complete FIFA-AEGIS system can be summarized as:
 
@@ -973,7 +973,7 @@ The complete FIFA-AEGIS system can be summarized as:
 
 ---
 
-## 🏁 23. Summary
+##  23. Summary
 
 **FIFA-AEGIS** is a modular autonomous football architecture designed for competitive 2D 1v1 environments.
 
